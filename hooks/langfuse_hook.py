@@ -2756,6 +2756,12 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
 
     latest_end_timestamp = subagent_start_timestamp
     previous_start_timestamp = subagent_start_timestamp
+    # A subagent can itself launch Agent/Task tool_uses (nested subagents);
+    # without resolving its own subagents/ dir those launches would emit as
+    # plain tool spans with no generation, so their tokens/cost/tool spans
+    # never reach Langfuse. Mirrors the top-level resolution in
+    # get_new_turns_from_transcript.
+    nested_subagent_transcripts_by_tool_use_id = get_subagent_transcripts_by_tool_use_id(path)
     # The agent transcript is complete on disk, so history accumulates
     # across its turns the same way as in the main conversation.
     subagent_history: List[Dict[str, Any]] = []
@@ -2766,7 +2772,7 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
             turn,
             previous_start_timestamp,
             generation_name=generation_name,
-            subagent_transcripts_by_tool_use_id=None,
+            subagent_transcripts_by_tool_use_id=nested_subagent_transcripts_by_tool_use_id,
             history_prefix=list(subagent_history),
         )
         subagent_history.extend(build_turn_history_messages(turn))
