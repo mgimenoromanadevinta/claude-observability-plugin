@@ -2247,6 +2247,8 @@ def emit_single_tool_observation(
                     parent_otel_span,
                     subagent,
                     tool_use_timestamp,
+                    subagent_transcripts_by_tool_use_id=subagent_transcripts_by_tool_use_id,
+                    workflow_agent_transcripts_by_run_id=workflow_agent_transcripts_by_run_id,
                 )
 
     workflow_end_timestamp = None
@@ -2267,6 +2269,8 @@ def emit_single_tool_observation(
             workflow_name=workflow_name,
             workflow_resolved=workflow_resolved,
             cursor=cursor,
+            subagent_transcripts_by_tool_use_id=subagent_transcripts_by_tool_use_id,
+            workflow_agent_transcripts_by_run_id=workflow_agent_transcripts_by_run_id,
             emission_scope=tool_use_id or tool_key,
         )
 
@@ -2520,6 +2524,8 @@ def emit_turn_observations(langfuse: Langfuse, parent_otel_span: Any, turn: Turn
             parent_otel_span,
             pending_subagent["subagent"],
             pending_subagent.get("display_start_timestamp") or pending_subagent.get("start_timestamp"),
+            subagent_transcripts_by_tool_use_id=subagent_transcripts_by_tool_use_id,
+            workflow_agent_transcripts_by_run_id=workflow_agent_transcripts_by_run_id,
         )
         latest_end_timestamp = _get_latest_timestamp(latest_end_timestamp, subagent_end_timestamp)
 
@@ -2655,6 +2661,8 @@ def emit_workflow_agent_observations(
     workflow_resolved: bool,
     cursor: EmissionCursor,
     emission_scope: str,
+    subagent_transcripts_by_tool_use_id: Optional[Dict[str, Dict[str, Any]]] = None,
+    workflow_agent_transcripts_by_run_id: Optional[WorkflowAgentTranscriptsByRunId] = None,
 ) -> Optional[datetime]:
     """Emit each workflow-spawned agent transcript under the launching
     "Tool: Workflow" span.
@@ -2698,6 +2706,8 @@ def emit_workflow_agent_observations(
             # (no text in the final message); the journal result is the agent's
             # actual return value, so it becomes the span output instead of "".
             empty_output_fallback=agent_result_json,
+            subagent_transcripts_by_tool_use_id=subagent_transcripts_by_tool_use_id,
+            workflow_agent_transcripts_by_run_id=workflow_agent_transcripts_by_run_id,
         )
         latest_end_timestamp = _get_latest_timestamp(latest_end_timestamp, agent_end_timestamp)
     return latest_end_timestamp
@@ -2708,7 +2718,9 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
                                span_name: Optional[str] = None,
                                extra_metadata: Optional[Dict[str, Any]] = None,
                                generation_name: str = "Subagent LLM Call",
-                               empty_output_fallback: Optional[str] = None) -> Optional[datetime]:
+                               empty_output_fallback: Optional[str] = None,
+                               subagent_transcripts_by_tool_use_id: Optional[Dict[str, Dict[str, Any]]] = None,
+                               workflow_agent_transcripts_by_run_id: Optional[WorkflowAgentTranscriptsByRunId] = None) -> Optional[datetime]:
     path = subagent.get("path")
     if not isinstance(path, Path):
         return start_timestamp
@@ -2756,12 +2768,6 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
 
     latest_end_timestamp = subagent_start_timestamp
     previous_start_timestamp = subagent_start_timestamp
-    # A subagent can itself launch Agent/Task tool_uses (nested subagents);
-    # without resolving its own subagents/ dir those launches would emit as
-    # plain tool spans with no generation, so their tokens/cost/tool spans
-    # never reach Langfuse. Mirrors the top-level resolution in
-    # get_new_turns_from_transcript.
-    nested_subagent_transcripts_by_tool_use_id = get_subagent_transcripts_by_tool_use_id(path)
     # The agent transcript is complete on disk, so history accumulates
     # across its turns the same way as in the main conversation.
     subagent_history: List[Dict[str, Any]] = []
@@ -2772,7 +2778,19 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
             turn,
             previous_start_timestamp,
             generation_name=generation_name,
-            subagent_transcripts_by_tool_use_id=nested_subagent_transcripts_by_tool_use_id,
+            # A subagent can itself launch Agent/Task tool_uses (nested
+            # subagents) or a Workflow. Claude Code writes every agent's
+            # meta.json flat under the top-level transcript's subagents/ dir
+            # regardless of nesting depth (toolUseId is unique session-wide,
+            # and depth>=2 metas carry parentAgentId) — so the one map/lookup
+            # resolved at the top is valid at every depth; it must be
+            # threaded through unchanged, not rebuilt from this subagent's
+            # own transcript path (its subagents/ dir never exists) or
+            # dropped to None. Either mistake silently drops
+            # grandchild-and-deeper agents' generations (tokens/cost) and
+            # tool spans.
+            subagent_transcripts_by_tool_use_id=subagent_transcripts_by_tool_use_id,
+            workflow_agent_transcripts_by_run_id=workflow_agent_transcripts_by_run_id,
             history_prefix=list(subagent_history),
         )
         subagent_history.extend(build_turn_history_messages(turn))

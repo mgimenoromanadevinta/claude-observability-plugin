@@ -17,10 +17,13 @@ def test_subagent_observations_recurse_into_grandchild_agent(
     "grandchild", agent) must have that nested agent's own generations
     emitted too — otherwise its tokens/cost/tool spans never reach Langfuse.
 
-    Builds a synthetic child-agent transcript (agent-child.jsonl) that
-    launches a grandchild agent, resolved via a subagents/ dir sitting next
-    to agent-child's own jsonl — the same layout Claude Code uses one level
-    up (transcript.jsonl -> transcript/subagents/).
+    Real Claude Code stores every agent's meta/jsonl flat in the top-level
+    session's single subagents/ dir, keyed by globally-unique toolUseId
+    (with spawnDepth/parentAgentId marking nesting) — not in a per-agent
+    nested subagents/ dir. So the caller must pass the flat
+    subagent_transcripts_by_tool_use_id map explicitly; it is threaded
+    unchanged through every recursion level rather than re-resolved per
+    child.
     """
     child_jsonl = tmp_path / "subagents" / "agent-child.jsonl"
     _write_jsonl(child_jsonl, [
@@ -82,18 +85,11 @@ def test_subagent_observations_recurse_into_grandchild_agent(
         },
     ])
 
-    # Grandchild agent transcript, nested under the child's own subagents/ dir.
-    grandchild_jsonl = tmp_path / "subagents" / "agent-child" / "subagents" / "agent-grandchild.jsonl"
-    grandchild_jsonl.parent.mkdir(parents=True)
-    (grandchild_jsonl.parent / "agent-grandchild.meta.json").write_text(
-        json.dumps({
-            "agentType": "general-purpose",
-            "description": "Grandchild work",
-            "toolUseId": "toolu_grandchild_agent",
-            "spawnDepth": 2,
-        }),
-        encoding="utf-8",
-    )
+    # Grandchild agent transcript. Real Claude Code stores every nested
+    # agent's meta/jsonl flat in the *top-level* session's subagents/ dir,
+    # keyed by its globally-unique toolUseId — never in a subagents/ dir
+    # nested under the parent agent's own transcript.
+    grandchild_jsonl = tmp_path / "subagents" / "agent-grandchild.jsonl"
     _write_jsonl(grandchild_jsonl, [
         {
             "type": "user",
@@ -120,6 +116,14 @@ def test_subagent_observations_recurse_into_grandchild_agent(
         },
     ])
 
+    grandchild_transcripts_by_tool_use_id = {
+        "toolu_grandchild_agent": {
+            "path": grandchild_jsonl,
+            "description": "Grandchild work",
+            "agent_type": "general-purpose",
+        },
+    }
+
     hook_module.emit_subagent_observations(
         fake_langfuse,
         None,
@@ -129,6 +133,7 @@ def test_subagent_observations_recurse_into_grandchild_agent(
             "agent_type": "general-purpose",
         },
         None,
+        subagent_transcripts_by_tool_use_id=grandchild_transcripts_by_tool_use_id,
     )
 
     names = [observation.name for observation in fake_langfuse.observations]

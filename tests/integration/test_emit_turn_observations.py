@@ -34,12 +34,16 @@ def test_emit_turn_observations_creates_generation_tool_and_subagent_observation
     assert "Async agent launched successfully." in agent_tool.output
 
 
-def test_nested_subagents_document_current_non_recursive_emission_behavior(
+def test_nested_subagents_recurse_into_inner_agent(
     hook_module,
     fixture_transcript_path,
     read_fixture_jsonl,
     fake_langfuse,
 ):
+    """Outer agent launches an inner agent (spawnDepth=2). Both are stored
+    flat in the same subagents/ dir, keyed by globally-unique toolUseId —
+    the inner agent's own span/generation must still be emitted.
+    """
     transcript = fixture_transcript_path("nested_subagents")
     rows = read_fixture_jsonl(transcript)
     subagents = hook_module.get_subagent_transcripts_by_tool_use_id(transcript)
@@ -57,7 +61,18 @@ def test_nested_subagents_document_current_non_recursive_emission_behavior(
     names = [observation.name for observation in fake_langfuse.observations]
     assert "Subagent: Outer agent" in names
     assert "Tool: Agent" in names
-    assert "Subagent: Inner agent" not in names
+    assert "Subagent: Inner agent" in names, (
+        "inner (3rd-level) agent span missing: nested Agent launch inside "
+        "a subagent transcript was not resolved to its own subagent span"
+    )
+
+    inner_generations = [
+        observation for observation in fake_langfuse.observations
+        if observation.name == "Subagent LLM Call"
+        and observation._otel_span.parent is not None
+        and observation._otel_span.parent.name == "Subagent: Inner agent"
+    ]
+    assert inner_generations, "inner agent's own LLM generation (tokens/cost) was not emitted"
 
 
 # The fixture's human wait: the AskUserQuestion tool_use is written at
